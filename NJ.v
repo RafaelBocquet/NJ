@@ -11,6 +11,21 @@ Require Import Coq.Structures.Orders.
 Require Import Program.
 
 Hint Immediate eq_nat_dec.
+     
+Tactic Notation "solve_by_inversion_step" tactic(t) :=
+  match goal with
+    | H : _ |- _ => solve [ inversion H; subst; t ]
+  end
+    || fail "because the goal is not solvable by inversion.".
+
+Tactic Notation "solve" "by" "inversion" "1" :=
+  solve_by_inversion_step idtac.
+Tactic Notation "solve" "by" "inversion" "2" :=
+  solve_by_inversion_step (solve by inversion 1).
+Tactic Notation "solve" "by" "inversion" "3" :=
+  solve_by_inversion_step (solve by inversion 2).
+Tactic Notation "solve" "by" "inversion" :=
+  solve by inversion 1.
 
 Ltac simpl_exist :=
   repeat match goal with
@@ -394,13 +409,17 @@ Module Expr (T : TermDef).
          | nfv_copair2 : forall n m (a : exp n m),
                            nfview a -> nfview_unknown (e_copair2 a)
          | nfv_case : forall n m (a : exp n m) b c,
+                        (forall x, a = e_copair1 x -> False) ->
+                        (forall x, a = e_copair2 x -> False) ->
                         nfview a -> nfview b -> nfview c -> nfview_unknown (e_case a b c)
          | nfv_tt : forall n m, @nfview_unknown n m e_tt
          | nfv_pair : forall n m (a : exp n m) b,
                         nfview a -> nfview b -> nfview_unknown (e_pair a b)
          | nfv_pair1 : forall n m (a : exp n m),
+                         (forall x y, a = e_pair x y -> False) ->
                          nfview a -> nfview_unknown (e_pair1 a)
          | nfv_pair2 : forall n m (a : exp n m),
+                         (forall x y, a = e_pair x y -> False) ->
                          nfview a -> nfview_unknown (e_pair2 a)
     .
 
@@ -420,7 +439,10 @@ Module Expr (T : TermDef).
       repeat match goal with
                  [ A : nf ?e -> nfview ?e, B : nf ?e |- _ ] => apply A in B
              end;
-      try (apply nfv_unknown with (ns:=nil); eauto; constructor; eauto; nf_nfview_helper p; fail);
+      try (apply nfv_unknown with (ns:=nil); eauto; constructor; eauto;
+           try (nf_nfview_helper p; fail);
+           try (intros; subst; eapply p; constructor);
+           fail);
       try (constructor (solve [eauto; nf_nfview_helper p]); fail).
       + destruct H; try (exfalso; eapply p; constructor; fail).
         apply nfv_unknown with (e:=e) (ns:=cons e2 ns)...
@@ -429,12 +451,39 @@ Module Expr (T : TermDef).
     Theorem nfview_nf : forall n m (e : exp n m), (nfview e -> nf e) /\ (nfview_unknown e -> nf e).
     Proof with eauto.
       intros n m e; set (e0 := e); dependent induction e;
-      (assert (nfview_unknown e0 -> nf e0);
-      [idtac]).
-      
-      + generalize dependent ns. induction ns.
+      (assert (S2 : nfview_unknown e0 -> nf e0);
+      [ subst e0; intro;
+        repeat match goal with [ H : _ /\ _ |- _ ] => destruct H end;
+        try (intros e' H'; inversion H'; fail);
+        inversion H; simpl_exist; subst; eauto
+      | split; [|exact S2]; subst e0; intro;
+        repeat match goal with [ H : _ /\ _ |- _ ] => destruct H end;
+        inversion H; simpl_exist; subst;
+        try (match goal with
+                 [ H : fold_right _ _ _ = _ |- _ ] => destruct ns; [ simpl in H; subst; auto
+                                                                   | solve by inversion
+                                                                   ]
+             end; fail)
+      ]); try (intros e' H'; inversion H'; simpl_exist; subst; eauto;
+               match goal with 
+                 | [ H : nfview ?e -> nf ?e, _ : ?e ===> _ |- _ ] => unfold nf in H; eapply H; eauto
+               end; fail
+              ).
+      + destruct ns; simpl in H4; subst; [ solve by inversion |].
+        destruct ns; simpl in H4; inversion H4; simpl_exist; subst.
+        * simpl_forall_list.
+          intros e' H'; inversion H'; simpl_exist; subst.
+          inversion H8.
+          inversion H8.
+          unfold nf in H3; eapply H3; eauto.
+          unfold nf in H0; eapply H0; eauto.
 
-    
+        * simpl_forall_list.
+          intros e' H'; inversion H'; simpl_exist; subst.
+          unfold nf in H2; eapply H2... apply nfv_unknown with (e:=e) (ns:=cons e3 ns)...
+          unfold nf in H0; eapply H0; eauto.
+    Qed.     
+      
 End Expr.
 
 Module Type TermCongruence (T : TermDef).
