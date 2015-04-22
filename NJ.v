@@ -122,6 +122,20 @@ Qed.
 
 Hint Immediate eq_vector_dec.
 
+Lemma lift_fin_inj : forall {n} m (i : Fin.t n) j,
+                       Fin.R m i = Fin.R m j -> i = j.
+Proof.
+  induction m; intros; simpl in H; auto.
+  inversion H. apply inj_pair2_eq_dec in H1; eauto.
+Qed.
+
+Lemma vector_map_map : forall {n A B C} (f : B->C) (g:A->B) (v : Vector.t A n),
+                         Vector.map f (Vector.map g v) = Vector.map (fun x => f (g x)) v.
+Proof.
+  induction v; auto.
+  simpl. f_equal. auto.
+Qed.
+
 Lemma vector_map_inj : forall {n A B} (f : A -> B) (v v' : Vector.t A n)
                        (P : forall i t', f v[@i] = f t' -> v[@i] = t'),
                          Vector.map f v = Vector.map f v' -> v = v'.
@@ -177,6 +191,19 @@ Lemma fin_subst_eq : forall n A (t : A) (x : Fin.t (S n)), fin_subst t x x = inl
 Proof with eauto.
   induction n; intros; fin_dep_destruct x; simpl...
   rewrite IHn...
+Qed.
+
+Lemma fin_subst_neq : forall n A B (t : A) (t' : B) (x y : Fin.t (S n)),
+                        x <> y -> exists v, fin_subst t x y = inr v /\
+                                            fin_subst t' x y = inr v.
+Proof with eauto.
+  induction n; dependent destruction x; dependent destruction y; intro;
+  try (exfalso; eauto; fail);
+  try (eapply Fin.case0; eauto; fail);
+  try (eexists; split; simpl; eauto; fail).
+  assert (x <> y); [intro; subst; apply H; auto|];
+  specialize (IHn _ _ t t' x y H0); destruct IHn; destruct_pairs;
+  eexists; simpl; rewrite H1; rewrite H2; split; eauto.
 Qed.
 
 Lemma eq_fin_subst : forall n A (t t' : A) (x y : Fin.t (S n)), fin_subst t x y = inl t' -> t = t'.
@@ -254,15 +281,21 @@ Module Expr (T : TermDef).
 
   Fixpoint lift_term {n} (t : term n) : term (S n) :=
     match t with
-      | t_var _ i => t_var (Fin.R 1 i)
+      | t_var _ j => t_var (Fin.R 1 j)
       | t_term _ s ts => t_term s (Vector.map lift_term ts)
+    end.
+
+  Fixpoint lift_term_by {n} i (t : term n) : term (i + n) :=
+    match i with
+      | 0 => t
+      | S i => lift_term (lift_term_by i t)
     end.
 
   Theorem lift_term_inj : forall {n} (t t' : term n),
                             lift_term t = lift_term t' -> t = t'.
   Proof.
     induction t using termRect; intros t' H0; destruct t';
-    simpl in H0; try (solve by inversion); inversion H0; simpl_exist; auto.
+    simpl in H0; try (solve by inversion); inversion H0; simpl_exist; auto.    
     apply vector_map_inj in H3; subst; auto.
   Qed.
 
@@ -354,6 +387,12 @@ Module Expr (T : TermDef).
     | ty_pair _ a b => ty_pair (lift_type a) (lift_type b)
     | ty_top _ => ty_top
   end.
+
+  Fixpoint lift_type_by {n} i (t : type n) : type (i + n) :=
+    match i with
+      | 0 => t
+      | S i => lift_type (lift_type_by i t)
+    end.
 
   Theorem lift_type_inj : forall {n} (t t' : type n),
                             lift_type t = lift_type t' -> t = t'.
@@ -730,6 +769,8 @@ Module NJ (T : TermDef) (TC : TermCongruence(T)).
   | te_trans : forall {n} {x y z : type n}, x ≡ y -> y ≡ z -> x ≡ z
   | te_term : forall {n} {x y : type n},
                 cong x y -> x ≡ y
+  | te_subst : forall {n i t} {x y : type (S n)},
+                      x ≡ y -> type_subst i t x ≡ type_subst i t y
   where "x '≡' y" := (type_equiv x y).
   
   Theorem te_refl : forall {n : nat} (x : type n), x ≡ x.
@@ -1113,71 +1154,210 @@ Module Q4(T:TermDef)(TC:TermCongruence(T)).
              | [ H : ?a, H0 : ?a -> ?b |- _ ] => specialize (H0 H)
            end.
   
-  Lemma empty_nf : sans_confusion ->
-                   (forall n m Γ (e : exp n m) ty (P : Γ ⊢ e ∈ ty),
-                      n = 0 -> m = 0 -> nfview e ->
-                      (forall x, e <> e_absurd x) /\
-                      (forall x y, e <> e_app x y) /\
-                      (forall x y, e <> e_tapp x y) /\
-                      (forall x, e <> e_pair1 x) /\
-                      (forall x, e <> e_pair2 x) /\
-                      (forall x y, e <> e_ecase x y) /\
-                      (forall x y z, e <> e_case x y z) /\
-                      ty <> ty_bottom
-                   ).
-  Proof.
-    Ltac solver :=
-      match goal with
-        | [ H : sans_confusion, H0 : _ ≡ _ |- _ ] =>
-          (apply H in H0; try (inversion H0; simpl_exist; subst;
-                               try (apply Fin.case0; trivial; fail);
-                               try (unfold not; intro A; inversion A; fail);
-                               fail))
-        | [ H0 : appcontext[?x = ?x -> False] |- _ ] => (eapply H0; eauto)
-        | [ H0 : appcontext[?x _ = ?x _ -> False] |- _ ] => (eapply H0; eauto)
-        | [ H0 : appcontext[?x _ _ = ?x _ _ -> False] |- _ ] => (eapply H0; eauto)
-        | [ H0 : appcontext[?x _ _ _ = ?x _ _ _ -> False] |- _ ] => (eapply H0; eauto)
-      end.
+  (* Lemma empty_nf : sans_confusion -> *)
+  (*                  (forall n m Γ (e : exp n m) ty (P : Γ ⊢ e ∈ ty), *)
+  (*                     n = 0 -> m = 0 -> nfview e -> *)
+  (*                     (forall x, e <> e_absurd x) /\ *)
+  (*                     (forall x y, e <> e_app x y) /\ *)
+  (*                     (forall x y, e <> e_tapp x y) /\ *)
+  (*                     (forall x, e <> e_pair1 x) /\ *)
+  (*                     (forall x, e <> e_pair2 x) /\ *)
+  (*                     (forall x y, e <> e_ecase x y) /\ *)
+  (*                     (forall x y z, e <> e_case x y z) /\ *)
+  (*                     ty <> ty_bottom *)
+  (*                  ). *)
+  (* Proof. *)
+  (*   Ltac solver := *)
+  (*     match goal with *)
+  (*       | [ H : sans_confusion, H0 : _ ≡ _ |- _ ] => *)
+  (*         (apply H in H0; try (inversion H0; simpl_exist; subst; *)
+  (*                              try (apply Fin.case0; trivial; fail); *)
+  (*                              try (unfold not; intro A; inversion A; fail); *)
+  (*                              fail)) *)
+  (*       | [ H0 : appcontext[?x = ?x -> False] |- _ ] => (eapply H0; eauto) *)
+  (*       | [ H0 : appcontext[?x _ = ?x _ -> False] |- _ ] => (eapply H0; eauto) *)
+  (*       | [ H0 : appcontext[?x _ _ = ?x _ _ -> False] |- _ ] => (eapply H0; eauto) *)
+  (*       | [ H0 : appcontext[?x _ _ _ = ?x _ _ _ -> False] |- _ ] => (eapply H0; eauto) *)
+  (*     end. *)
 
-    intros H n m Γ e ty P.
-    induction P; intros; subst;
-    repeat constructor;
-    try (intros; unfold not; intro A; inversion A; fail);
-    try (apply Fin.case0; trivial; fail);
-    solver; unfold not in *;
-    try (exfalso; simpl_nf; try inversion H6; simpl_exist;
-         simpl_empty_nf; destruct_pairs;
-         match goal with
-           | [ P : has_type Γ _ _ |- _ ] =>
-             inversion P; simpl_exist;
-           try (apply Fin.case0; trivial; fail);
-           repeat solver
-         end; fail
-        );
-    try ( exfalso; inversion H3; simpl_exist; subst;
-          destruct ns; simpl_fold;
-          [ inversion H6
-          | destruct ns; inversion H1; simpl_exist; subst; simpl_forall_list;
-            apply nfview_app in H3; simpl_empty_nf; destruct_pairs;
-            [ inversion H6; simpl_exist; subst;
-              try (apply Fin.case0; auto; fail);
-              try (inversion P1; simpl_exist; subst; try solver; fail);
-              try solver
-            | solver
-            ]
-          ]; fail).
-  Qed.
+  (*   intros H n m Γ e ty P. *)
+  (*   induction P; intros; subst; *)
+  (*   repeat constructor; *)
+  (*   try (intros; unfold not; intro A; inversion A; fail); *)
+  (*   try (apply Fin.case0; trivial; fail); *)
+  (*   solver; unfold not in *; *)
+  (*   try (exfalso; simpl_nf; try inversion H6; simpl_exist; *)
+  (*        simpl_empty_nf; destruct_pairs; *)
+  (*        match goal with *)
+  (*          | [ P : has_type Γ _ _ |- _ ] => *)
+  (*            inversion P; simpl_exist; *)
+  (*          try (apply Fin.case0; trivial; fail); *)
+  (*          repeat solver *)
+  (*        end; fail *)
+  (*       ); *)
+  (*   try ( exfalso; inversion H3; simpl_exist; subst; *)
+  (*         destruct ns; simpl_fold; *)
+  (*         [ inversion H6 *)
+  (*         | destruct ns; inversion H1; simpl_exist; subst; simpl_forall_list; *)
+  (*           apply nfview_app in H3; simpl_empty_nf; destruct_pairs; *)
+  (*           [ inversion H6; simpl_exist; subst; *)
+  (*             try (apply Fin.case0; auto; fail); *)
+  (*             try (inversion P1; simpl_exist; subst; try solver; fail); *)
+  (*             try solver *)
+  (*           | solver *)
+  (*           ] *)
+  (*         ]; fail). *)
+  (* Qed. *)
 
-  Theorem sans_confusion_coherent : sans_confusion ->
-                                    forall (u : exp 0 0), nf u -> [] ⊢ u ∈ ty_bottom -> False.
-  Proof.
-    intros H u nf p.
-    apply nf_nfview in nf.
-    assert (P := empty_nf H _ _ _ _ _ p).
-    assert (0=0). reflexivity.
-    specialize (P H0 H0 nf).
-    destruct_pairs.
-    apply H8; auto.
-  Qed.
+  (* Theorem sans_confusion_coherent : sans_confusion -> *)
+  (*                                   forall (u : exp 0 0), nf u -> [] ⊢ u ∈ ty_bottom -> False. *)
+  (* Proof. *)
+  (*   intros H u nf p. *)
+  (*   apply nf_nfview in nf. *)
+  (*   assert (P := empty_nf H _ _ _ _ _ p). *)
+  (*   assert (0=0). reflexivity. *)
+  (*   specialize (P H0 H0 nf). *)
+  (*   destruct_pairs. *)
+  (*   apply H8; auto. *)
+  (* Qed. *)
   
 End Q4.
+
+Module Q5(T:TermDef)(TC:TermCongruence(T)).
+  Module NJ5 := Q4(T)(TC).
+  Import NJ5.
+  Export NJ5.
+
+  Lemma vector_nth_map : forall {n A B} (f : A -> B) (v : Vector.t A n) i,
+                           (Vector.map f v)[@i] = f v[@i].
+  Proof.
+    intros. eapply Vector.nth_map; eauto.
+  Qed.
+  
+  Lemma vector_map_id : forall {n A} (v : Vector.t A n),
+                          v = Vector.map (fun x => x) v.
+  Proof.
+    dependent induction v; simpl; f_equal; auto.
+  Qed.
+
+  Lemma vector_map_sur {n A B} (f g : A -> B) (v : Vector.t A n) :
+    (forall i, f v[@i] = g v[@i]) ->
+    Vector.map f v = Vector.map g v.
+  Proof.
+    dependent induction v; intros; simpl; auto.
+    f_equal.
+    specialize (H Fin.F1). auto.
+    apply IHv; intros. specialize (H (Fin.FS i)). auto.
+  Qed.
+
+  Lemma term_subst_1_lift_term : forall {n} (t : term n) t',
+                                   term_subst Fin.F1 t (lift_term t') = t'.
+  Proof.
+    dependent induction t' using termRect.
+    destruct n; auto; apply Fin.case0; auto.
+    simpl; f_equal. rewrite (vector_map_id t0); repeat rewrite vector_map_map.
+    apply vector_map_sur. intros; eapply H.
+  Qed.
+    
+  Lemma lift_term_term_subst :
+    forall {n} i (t : term n) t',
+      term_subst (Fin.FS i) (lift_term t) (lift_term t') = lift_term (term_subst i t t').
+  Proof.
+    dependent induction t' using termRect.
+    destruct (eq_fin_dec i t0) eqn:H.
+    subst. simpl. repeat rewrite fin_subst_eq. trivial.
+    + simpl. assert (H' := fin_subst_neq _ _ _ (lift_term t) t i t0 n0).
+      destruct H'. destruct_pairs. rewrite H0. rewrite H1. auto.
+    + simpl. f_equal. repeat rewrite vector_map_map.
+      apply vector_map_sur. intros. eapply H. apply JMeq_refl.
+  Qed.
+    
+  Lemma lift_type_term_subst :
+    forall {n} i (t : term n) ty,
+      type_subst (Fin.FS i) (lift_term t) (lift_type ty) = lift_type (type_subst i t ty).
+  Proof.
+    dependent induction ty; simpl; f_equal; auto using lift_term_term_subst.
+  Qed.
+    
+  Lemma liftΓ_term_subst :
+    forall {n m} i (t : term m) (Γ : Vector.t (type (S m)) n),
+      Vector.map (type_subst (Fin.FS i) (lift_term t)) (liftΓ Γ) = liftΓ (Vector.map (type_subst i t) Γ).
+  Proof.
+    intros. dependent induction Γ; simpl; f_equal; auto using lift_type_term_subst.
+  Qed.
+
+  Lemma term_subst_comm : forall {n} (t : term n) t' a i,
+                            term_subst Fin.F1 (term_subst i t t')
+                                       (term_subst (Fin.FS i) (lift_term t) a) =
+                            term_subst i t (term_subst Fin.F1 t' a).
+  Proof.
+    dependent induction a using termRect; intros.
+    + destruct (eq_fin_dec (Fin.FS i) t0) eqn:H; subst.
+      * simpl. repeat rewrite fin_subst_eq.
+        apply term_subst_1_lift_term.
+      * dependent destruction t0.
+        simpl. repeat rewrite fin_subst_eq. auto.
+        simpl. assert (i <> t0); [intro; subst; apply n0; auto|].
+        assert (H' := fin_subst_neq _ _ _ (lift_term t) t i t0 H0).
+        destruct H'; destruct_pairs. rewrite H1. rewrite H2. simpl.
+        destruct n; auto; apply Fin.case0; auto.
+    + simpl. f_equal. repeat rewrite vector_map_map.
+      apply vector_map_sur; intros. eapply H; eauto.
+  Qed.
+        
+  Lemma type_subst_comm : forall {n} (t : term n) t' a i,
+                            type_subst Fin.F1 (term_subst i t t')
+                                       (type_subst (Fin.FS i) (lift_term t) a) =
+                            type_subst i t (type_subst Fin.F1 t' a).
+  Proof.
+    dependent induction a; intros; simpl; try (f_equal; eauto using term_subst_comm; fail).
+    (* lift_type needs to be replaced by lift_type_by, this is very difficult as n+m is not definitionally equal to m+n... *)
+    admit.
+    admit.
+  Qed.
+    
+  Theorem has_type_term_subst :
+    forall {n m} Γ (u : exp n (S m)) ty i t (P : Γ ⊢ u ∈ ty),
+      Vector.map (type_subst i t) Γ ⊢ exp_subst_term i t u ∈ type_subst i t ty.
+  Proof.
+    intros.
+    dependent induction P; simpl;
+    try (
+        repeat match goal with
+                 | [ H : (forall (_ : ?ty), _) |- _ ] =>
+                   let x := fresh "x" in
+                   evar (x : ty); specialize (H x);
+                 match goal with
+                   | [ x := ?a : ?b ~= ?c |- _ ] => unify b c; subst x
+                   | [ x := _ : _ |- _ ] => subst x
+                 end
+               end;
+        try (
+            simpl in *; econstructor; eauto using te_subst;
+            repeat match goal with
+                     | [ H : ?ty ≡ ?ty' |- _ ] =>
+                       match ty with
+                         | type_subst _ _ _ => fail
+                         | _ => eapply te_subst in H
+                       end
+                   end;
+            eauto using te_subst; fail)).
+    + econstructor. erewrite Vector.nth_map; eauto using te_subst.
+    + econstructor.
+      rewrite liftΓ_term_subst in IHP. eauto.
+      eapply te_subst in H. eapply H.
+    + econstructor. instantiate (1 := type_subst (Fin.FS i) (lift_term t) p).
+      rewrite type_subst_comm. eapply IHP.
+      eapply te_subst in H. eapply H.
+    + simpl in IHP2. rewrite liftΓ_term_subst in IHP2. rewrite lift_type_term_subst in IHP2.
+      econstructor; eauto using te_subst.
+      
+      Grab Existential Variables.
+      eauto. eauto. eauto. eauto. eauto.
+      eauto. eauto. eauto. eauto. eauto.
+      eauto. eauto. eauto. eauto. eauto.
+      eauto. eauto. eauto. eauto. eauto.
+      eauto. eauto. eauto. eauto.
+  Qed.
+
+End Q5.
